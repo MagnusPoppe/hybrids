@@ -1,4 +1,3 @@
-import { stringifyElement } from "./utils.js";
 import * as emitter from "./emitter.js";
 
 const entries = new WeakMap();
@@ -28,6 +27,17 @@ export function getEntry(target, key) {
   return entry;
 }
 
+export function getEntries(target) {
+  const result = [];
+  const targetMap = entries.get(target);
+  if (targetMap) {
+    targetMap.forEach(entry => {
+      result.push(entry);
+    });
+  }
+  return result;
+}
+
 function calculateChecksum(entry) {
   let checksum = entry.state;
   if (entry.deps) {
@@ -48,6 +58,7 @@ function restoreObservedDeps(entry, deps) {
   if (deps) {
     deps.forEach(depEntry => {
       entry.deps.add(depEntry);
+      /* istanbul ignore if */
       if (!depEntry.contexts) depEntry.contexts = new Set();
       depEntry.contexts.add(entry);
       restoreObservedDeps(entry, depEntry.deps);
@@ -56,15 +67,11 @@ function restoreObservedDeps(entry, deps) {
 }
 
 const contextStack = new Set();
-export function get(target, key, getter) {
+export function get(target, key, getter, validate) {
   const entry = getEntry(target, key);
 
   if (contextStack.size && contextStack.has(entry)) {
-    throw Error(
-      `Circular get invocation of the '${key}' property in '${stringifyElement(
-        target,
-      )}'`,
-    );
+    throw Error(`Circular get invocation is forbidden: '${key}'`);
   }
 
   contextStack.forEach(context => {
@@ -77,7 +84,11 @@ export function get(target, key, getter) {
     }
   });
 
-  if (entry.checksum && entry.checksum === calculateChecksum(entry)) {
+  if (
+    ((validate && validate(entry.value)) || !validate) &&
+    entry.checksum &&
+    entry.checksum === calculateChecksum(entry)
+  ) {
     return entry.value;
   }
 
@@ -86,6 +97,7 @@ export function get(target, key, getter) {
 
     if (entry.observed && entry.deps && entry.deps.size) {
       entry.deps.forEach(depEntry => {
+        /* istanbul ignore else */
         if (depEntry.contexts) depEntry.contexts.delete(entry);
       });
     }
@@ -126,7 +138,7 @@ export function get(target, key, getter) {
 export function set(target, key, setter, value, force) {
   if (contextStack.size && !force) {
     throw Error(
-      `Try to set '${key}' of '${stringifyElement(target)}' in get call`,
+      `Setting property in chain of get calls is forbidden: '${key}'`,
     );
   }
 
@@ -142,15 +154,7 @@ export function set(target, key, setter, value, force) {
   }
 }
 
-export function invalidate(target, key, clearValue) {
-  if (contextStack.size) {
-    throw Error(
-      `Try to invalidate '${key}' in '${stringifyElement(target)}' get call`,
-    );
-  }
-
-  const entry = getEntry(target, key);
-
+function invalidateEntry(entry, clearValue) {
   entry.checksum = 0;
   entry.state += 1;
 
@@ -158,6 +162,32 @@ export function invalidate(target, key, clearValue) {
 
   if (clearValue) {
     entry.value = undefined;
+  }
+}
+
+export function invalidate(target, key, clearValue) {
+  if (contextStack.size) {
+    throw Error(
+      `Invalidating property in chain of get calls is forbidden: '${key}'`,
+    );
+  }
+
+  const entry = getEntry(target, key);
+  invalidateEntry(entry, clearValue);
+}
+
+export function invalidateAll(target, clearValue) {
+  if (contextStack.size) {
+    throw Error(
+      "Invalidating all properties in chain of get calls is forbidden",
+    );
+  }
+
+  const targetMap = entries.get(target);
+  if (targetMap) {
+    targetMap.forEach(entry => {
+      invalidateEntry(entry, clearValue);
+    });
   }
 }
 
@@ -176,6 +206,7 @@ export function observe(target, key, getter, fn) {
 
   if (entry.deps) {
     entry.deps.forEach(depEntry => {
+      /* istanbul ignore else */
       if (!depEntry.contexts) depEntry.contexts = new Set();
       depEntry.contexts.add(entry);
     });
@@ -186,6 +217,7 @@ export function observe(target, key, getter, fn) {
     entry.observed = false;
     if (entry.deps && entry.deps.size) {
       entry.deps.forEach(depEntry => {
+        /* istanbul ignore else */
         if (depEntry.contexts) depEntry.contexts.delete(entry);
       });
     }
